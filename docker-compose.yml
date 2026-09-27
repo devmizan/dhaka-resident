@@ -1,0 +1,26 @@
+name: dhaka-resident
+
+services:
+  db:
+    # Matches the MariaDB version on the production host.
+    image: mariadb:11.4
+    restart: unless-stopped
+    environment:
+      MARIADB_ROOT_PASSWORD: dhaka_root_local
+      MARIADB_USER: dhaka
+      MARIADB_PASSWORD: dhaka_local_dev
+      MARIADB_DATABASE: dhaka_resident
+    ports:
+      # Host port 33061 avoids clashing with a MySQL/MariaDB already installed on 3306.
+      - "${MARIADB_PORT:-33061}:3306"
+    volumes:
+      - dbdata:/var/lib/mysql
+      - ./docker/mariadb/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+volumes:
+  dbdata:

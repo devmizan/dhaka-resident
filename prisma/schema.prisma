@@ -1,0 +1,636 @@
+// Dhaka Resident — database schema
+// Money is stored as whole units of the listing's currency (e.g. BDT taka).
+
+generator client {
+  provider     = "prisma-client"
+  output       = "../src/generated/prisma"
+  moduleFormat = "esm"
+}
+
+datasource db {
+  provider = "mysql"
+}
+
+// ─────────────────────────────────────────────────────────────
+// Enums
+// ─────────────────────────────────────────────────────────────
+
+enum Role {
+  TENANT
+  OWNER
+  ADMIN
+}
+
+enum UserStatus {
+  ACTIVE
+  SUSPENDED
+}
+
+enum ListingStatus {
+  DRAFT
+  PENDING_REVIEW
+  PUBLISHED
+  REJECTED
+  PAUSED
+  RENTED
+  UNPUBLISHED
+}
+
+enum BillingPeriod {
+  MONTHLY
+  WEEKLY
+  DAILY
+}
+
+enum Furnishing {
+  FURNISHED
+  SEMI_FURNISHED
+  UNFURNISHED
+}
+
+enum BathroomType {
+  PRIVATE
+  SHARED
+}
+
+enum PetPolicy {
+  ALLOWED
+  NEGOTIABLE
+  NOT_ALLOWED
+}
+
+enum TenantPreference {
+  ANY
+  FAMILY
+  FEMALE_ONLY
+  MALE_ONLY
+  STUDENTS
+  PROFESSIONALS
+}
+
+enum AddressVisibility {
+  PUBLIC
+  AFTER_ACCEPTED_VIEWING
+  PRIVATE
+}
+
+enum AmenityGroup {
+  ESSENTIALS
+  BUILDING
+  SAFETY
+  ACCESSIBILITY
+}
+
+enum EnquiryStatus {
+  OPEN
+  CLOSED
+}
+
+enum ViewingStatus {
+  PENDING
+  ACCEPTED
+  DECLINED
+  CANCELLED
+}
+
+enum ReportReason {
+  SCAM_OR_FRAUD
+  INACCURATE_INFORMATION
+  ALREADY_RENTED
+  DUPLICATE
+  OFFENSIVE_CONTENT
+  DISCRIMINATION
+  OTHER
+}
+
+enum ReportStatus {
+  OPEN
+  RESOLVED
+  DISMISSED
+}
+
+enum NotificationType {
+  ENQUIRY_RECEIVED
+  MESSAGE_RECEIVED
+  VIEWING_REQUESTED
+  VIEWING_ACCEPTED
+  VIEWING_DECLINED
+  VIEWING_CANCELLED
+  LISTING_SUBMITTED
+  LISTING_APPROVED
+  LISTING_REJECTED
+  LISTING_UNPUBLISHED
+  REPORT_UPDATED
+  ACCOUNT_UPDATED
+}
+
+enum EmailStatus {
+  SENT
+  SKIPPED
+  FAILED
+}
+
+// ─────────────────────────────────────────────────────────────
+// Locations (structured so more countries can be added)
+// ─────────────────────────────────────────────────────────────
+
+model Country {
+  id             String   @id @default(cuid())
+  code           String   @unique // ISO 3166-1 alpha-2, e.g. "BD"
+  name           String
+  currencyCode   String // ISO 4217, e.g. "BDT"
+  currencySymbol String
+  locale         String   @default("en-BD")
+  timeZone       String   @default("Asia/Dhaka")
+  isActive       Boolean  @default(true)
+  createdAt      DateTime @default(now())
+  cities         City[]
+}
+
+model City {
+  id            String         @id @default(cuid())
+  countryId     String
+  country       Country        @relation(fields: [countryId], references: [id])
+  name          String
+  slug          String
+  isActive      Boolean        @default(true)
+  sortOrder     Int            @default(0)
+  latitude      Float?
+  longitude     Float?
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+  neighborhoods Neighborhood[]
+  properties    Property[]
+
+  @@unique([countryId, slug])
+  @@index([isActive, sortOrder])
+}
+
+model Neighborhood {
+  id         String     @id @default(cuid())
+  cityId     String
+  city       City       @relation(fields: [cityId], references: [id], onDelete: Cascade)
+  name       String
+  slug       String
+  isActive   Boolean    @default(true)
+  latitude   Float?
+  longitude  Float?
+  createdAt  DateTime   @default(now())
+  updatedAt  DateTime   @updatedAt
+  properties Property[]
+
+  @@unique([cityId, slug])
+}
+
+// ─────────────────────────────────────────────────────────────
+// Users & authentication
+// ─────────────────────────────────────────────────────────────
+
+model User {
+  id                 String     @id @default(cuid())
+  // Optional: people who sign up with a mobile number and a one-time code may have no email.
+  email              String?    @unique @db.VarChar(255)
+  // Null for accounts created with a one-time code that haven't set a password.
+  passwordHash       String?
+  name               String
+  // Normalised E.164 format, e.g. +8801712345678.
+  phone              String?    @unique
+  emailVerifiedAt    DateTime?
+  phoneVerifiedAt    DateTime?
+  role               Role       @default(TENANT)
+  status             UserStatus @default(ACTIVE)
+  companyName        String?
+  bio                String?    @db.Text
+  isDemo             Boolean    @default(false)
+  emailNotifications Boolean    @default(true)
+  notifyEnquiries    Boolean    @default(true)
+  notifyViewings     Boolean    @default(true)
+  notifyListing      Boolean    @default(true)
+  lastLoginAt        DateTime?
+  createdAt          DateTime   @default(now())
+  updatedAt          DateTime   @updatedAt
+
+  sessions              Session[]
+  passwordResetTokens   PasswordResetToken[]
+  properties            Property[]           @relation("PropertyOwner")
+  reviewedProperties    Property[]           @relation("PropertyReviewer")
+  favorites             Favorite[]
+  tenantEnquiries       Enquiry[]            @relation("EnquiryTenant")
+  ownerEnquiries        Enquiry[]            @relation("EnquiryOwner")
+  messages              Message[]
+  viewingSlots          ViewingSlot[]
+  tenantViewingRequests ViewingRequest[]     @relation("ViewingTenant")
+  ownerViewingRequests  ViewingRequest[]     @relation("ViewingOwner")
+  reports               Report[]             @relation("ReportReporter")
+  resolvedReports       Report[]             @relation("ReportResolver")
+  notifications         Notification[]
+  adminActivities       AdminActivity[]
+  otpChallenges         OtpChallenge[]
+
+  @@index([role])
+}
+
+enum OtpChannel {
+  EMAIL
+  SMS
+}
+
+enum OtpPurpose {
+  SIGNUP
+  LOGIN
+  VERIFY_PHONE
+}
+
+/// A one-time code sent to an email address or mobile number. Only a hash of the code is stored.
+model OtpChallenge {
+  id             String     @id
+  channel        OtpChannel
+  purpose        OtpPurpose
+  destination    String // lowercase email or E.164 phone number
+  codeHash       String
+  // Pending sign-up details (name, role) until the code is verified.
+  payload        Json?
+  userId         String?
+  user           User?      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  attempts       Int        @default(0)
+  maxAttempts    Int        @default(5)
+  expiresAt      DateTime
+  consumedAt     DateTime?
+  deliveryStatus String // SENT | PRINTED_TO_CONSOLE | SUPPRESSED (unknown contact, nothing sent)
+  ipAddress      String?
+  createdAt      DateTime   @default(now())
+
+  @@index([destination, purpose, createdAt])
+  @@index([expiresAt])
+}
+
+model Session {
+  // SHA-256 hash of the random token stored in the cookie; the raw token is never persisted.
+  id         String   @id
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+  lastSeenAt DateTime @default(now())
+  userAgent  String?  @db.VarChar(255)
+  ipAddress  String?
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+model PasswordResetToken {
+  id        String    @id @default(cuid())
+  tokenHash String    @unique
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId])
+}
+
+model RateLimitBucket {
+  key         String   @id
+  count       Int
+  windowStart DateTime
+  expiresAt   DateTime
+
+  @@index([expiresAt])
+}
+
+// ─────────────────────────────────────────────────────────────
+// Catalogue: categories & amenities
+// ─────────────────────────────────────────────────────────────
+
+model PropertyCategory {
+  id                String     @id @default(cuid())
+  slug              String     @unique
+  name              String
+  pluralName        String
+  description       String?    @db.VarChar(300)
+  icon              String     @default("home")
+  // Hostels and shared rooms are let per bed and use room types.
+  usesRoomTypes     Boolean    @default(false)
+  isCommercial      Boolean    @default(false)
+  isActive          Boolean    @default(true)
+  sortOrder         Int        @default(0)
+  createdAt         DateTime   @default(now())
+  updatedAt         DateTime   @updatedAt
+  properties        Property[]
+}
+
+model Amenity {
+  id         String            @id @default(cuid())
+  slug       String            @unique
+  name       String
+  group      AmenityGroup      @default(ESSENTIALS)
+  icon       String            @default("check")
+  isActive   Boolean           @default(true)
+  sortOrder  Int               @default(0)
+  createdAt  DateTime          @default(now())
+  updatedAt  DateTime          @updatedAt
+  properties PropertyAmenity[]
+}
+
+// ─────────────────────────────────────────────────────────────
+// Properties
+// ─────────────────────────────────────────────────────────────
+
+model Property {
+  id         String           @id @default(cuid())
+  slug       String           @unique
+  ownerId    String
+  owner      User             @relation("PropertyOwner", fields: [ownerId], references: [id], onDelete: Cascade)
+  categoryId String
+  category   PropertyCategory @relation(fields: [categoryId], references: [id])
+  status     ListingStatus    @default(DRAFT)
+  isDemo     Boolean          @default(false)
+  isFeatured Boolean          @default(false)
+
+  title       String @default("")
+  description String @default("") @db.Text
+
+  // Location
+  cityId            String?
+  city              City?             @relation(fields: [cityId], references: [id])
+  neighborhoodId    String?
+  neighborhood      Neighborhood?     @relation(fields: [neighborhoodId], references: [id])
+  approximateArea   String?
+  addressLine       String?           @db.VarChar(255)
+  latitude          Float?
+  longitude         Float?
+  addressVisibility AddressVisibility @default(PRIVATE)
+
+  // Pricing (whole currency units)
+  currencyCode      String        @default("BDT")
+  rentAmount        Int?
+  billingPeriod     BillingPeriod @default(MONTHLY)
+  rentNegotiable    Boolean       @default(false)
+  securityDeposit   Int?
+  advanceRentMonths Int?
+  serviceCharge     Int?
+  utilitiesIncluded Boolean       @default(false)
+  utilitiesNote     String?       @db.VarChar(300)
+  otherFees         String?       @db.Text
+
+  // Details
+  bedrooms         Int?
+  bathrooms        Int?
+  floorAreaSqft    Int?
+  floorNumber      Int?
+  totalFloors      Int?
+  furnishing       Furnishing?
+  bathroomType     BathroomType?
+  availableFrom    DateTime?
+  minimumStay      Int? // in units of billingPeriod
+  petPolicy        PetPolicy        @default(NOT_ALLOWED)
+  smokingAllowed   Boolean          @default(false)
+  tenantPreference TenantPreference @default(ANY)
+  houseRules       String?          @db.Text
+  includedFacilities String?        @db.Text
+
+  // Moderation
+  rejectionReason String?   @db.Text
+  submittedAt     DateTime?
+  publishedAt     DateTime?
+  reviewedAt      DateTime?
+  reviewedById    String?
+  reviewedBy      User?     @relation("PropertyReviewer", fields: [reviewedById], references: [id], onDelete: SetNull)
+  rentedAt        DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  photos          PropertyPhoto[]
+  amenities       PropertyAmenity[]
+  roomTypes       RoomType[]
+  favorites       Favorite[]
+  enquiries       Enquiry[]
+  viewingSlots    ViewingSlot[]
+  viewingRequests ViewingRequest[]
+  reports         Report[]
+
+  @@index([status, publishedAt])
+  @@index([status, cityId])
+  @@index([status, categoryId])
+  @@index([status, rentAmount])
+  @@index([ownerId])
+}
+
+model PropertyPhoto {
+  id         String   @id @default(cuid())
+  propertyId String
+  property   Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  url        String
+  storageKey String? // set for uploaded files; null for bundled demo images
+  width      Int?
+  height     Int?
+  altText    String?
+  sortOrder  Int      @default(0)
+  createdAt  DateTime @default(now())
+
+  @@index([propertyId, sortOrder])
+}
+
+model PropertyAmenity {
+  propertyId String
+  property   Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  amenityId  String
+  amenity    Amenity  @relation(fields: [amenityId], references: [id], onDelete: Cascade)
+
+  @@id([propertyId, amenityId])
+  @@index([amenityId])
+}
+
+model RoomType {
+  id            String        @id @default(cuid())
+  propertyId    String
+  property      Property      @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  name          String
+  bedsPerRoom   Int
+  totalBeds     Int
+  availableBeds Int
+  pricePerBed   Int
+  billingPeriod BillingPeriod @default(MONTHLY)
+  bathroomType  BathroomType  @default(SHARED)
+  description   String?       @db.VarChar(300)
+  sortOrder     Int           @default(0)
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  @@index([propertyId])
+}
+
+model Favorite {
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  propertyId String
+  property   Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  createdAt  DateTime @default(now())
+
+  @@id([userId, propertyId])
+  @@index([propertyId])
+}
+
+// ─────────────────────────────────────────────────────────────
+// Enquiries, messages & viewings
+// ─────────────────────────────────────────────────────────────
+
+model Enquiry {
+  id               String        @id @default(cuid())
+  propertyId       String
+  property         Property      @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  tenantId         String
+  tenant           User          @relation("EnquiryTenant", fields: [tenantId], references: [id], onDelete: Cascade)
+  ownerId          String
+  owner            User          @relation("EnquiryOwner", fields: [ownerId], references: [id], onDelete: Cascade)
+  status           EnquiryStatus @default(OPEN)
+  moveInDate       DateTime?
+  occupants        Int?
+  lastMessageAt    DateTime      @default(now())
+  tenantLastReadAt DateTime?
+  ownerLastReadAt  DateTime?
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+  messages         Message[]
+  viewingRequests  ViewingRequest[]
+
+  // One conversation per tenant per property.
+  @@unique([propertyId, tenantId])
+  @@index([ownerId, lastMessageAt])
+  @@index([tenantId, lastMessageAt])
+}
+
+model Message {
+  id             String   @id @default(cuid())
+  enquiryId      String
+  enquiry        Enquiry  @relation(fields: [enquiryId], references: [id], onDelete: Cascade)
+  senderId       String
+  sender         User     @relation(fields: [senderId], references: [id], onDelete: Cascade)
+  body           String   @db.Text
+  // Client-generated key that makes double submissions idempotent.
+  idempotencyKey String?  @unique
+  createdAt      DateTime @default(now())
+
+  @@index([enquiryId, createdAt])
+}
+
+model ViewingSlot {
+  id              String           @id @default(cuid())
+  propertyId      String
+  property        Property         @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  ownerId         String
+  owner           User             @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  startsAt        DateTime
+  endsAt          DateTime
+  note            String?          @db.VarChar(255)
+  isCancelled     Boolean          @default(false)
+  createdAt       DateTime         @default(now())
+  viewingRequests ViewingRequest[]
+
+  @@index([propertyId, startsAt])
+  @@index([ownerId, startsAt])
+}
+
+model ViewingRequest {
+  id             String        @id @default(cuid())
+  propertyId     String
+  property       Property      @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  tenantId       String
+  tenant         User          @relation("ViewingTenant", fields: [tenantId], references: [id], onDelete: Cascade)
+  ownerId        String
+  owner          User          @relation("ViewingOwner", fields: [ownerId], references: [id], onDelete: Cascade)
+  slotId         String?
+  slot           ViewingSlot?  @relation(fields: [slotId], references: [id], onDelete: SetNull)
+  enquiryId      String?
+  enquiry        Enquiry?      @relation(fields: [enquiryId], references: [id], onDelete: SetNull)
+  startsAt       DateTime
+  endsAt         DateTime
+  status         ViewingStatus @default(PENDING)
+  tenantNote     String?       @db.Text
+  ownerNote      String?       @db.Text
+  decidedAt      DateTime?
+  cancelledAt    DateTime?
+  cancelledById  String?
+  idempotencyKey String?       @unique
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  @@index([ownerId, status, startsAt])
+  @@index([tenantId, status, startsAt])
+  @@index([propertyId])
+  @@index([slotId])
+}
+
+// ─────────────────────────────────────────────────────────────
+// Moderation, notifications & audit
+// ─────────────────────────────────────────────────────────────
+
+model Report {
+  id             String       @id @default(cuid())
+  propertyId     String
+  property       Property     @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  reporterId     String
+  reporter       User         @relation("ReportReporter", fields: [reporterId], references: [id], onDelete: Cascade)
+  reason         ReportReason
+  details        String       @db.Text
+  status         ReportStatus @default(OPEN)
+  resolutionNote String?      @db.Text
+  resolvedById   String?
+  resolvedBy     User?        @relation("ReportResolver", fields: [resolvedById], references: [id], onDelete: SetNull)
+  resolvedAt     DateTime?
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  @@index([status, createdAt])
+  @@index([propertyId])
+  @@index([reporterId, propertyId])
+}
+
+model Notification {
+  id        String           @id @default(cuid())
+  userId    String
+  user      User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type      NotificationType
+  title     String
+  body      String           @db.Text
+  link      String?
+  readAt    DateTime?
+  createdAt DateTime         @default(now())
+
+  @@index([userId, readAt, createdAt])
+}
+
+model AdminActivity {
+  id         String   @id @default(cuid())
+  actorId    String?
+  actor      User?    @relation(fields: [actorId], references: [id], onDelete: SetNull)
+  action     String
+  entityType String
+  entityId   String?
+  summary    String   @db.Text
+  metadata   Json?
+  createdAt  DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([entityType, entityId])
+}
+
+model SiteSetting {
+  key         String   @id
+  value       Json
+  updatedAt   DateTime @updatedAt
+  updatedById String?
+}
+
+model EmailLog {
+  id        String      @id @default(cuid())
+  to        String      @db.VarChar(255)
+  subject   String      @db.VarChar(255)
+  status    EmailStatus
+  error     String?     @db.Text
+  createdAt DateTime    @default(now())
+
+  @@index([createdAt])
+}
